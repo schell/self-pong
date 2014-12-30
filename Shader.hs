@@ -6,6 +6,7 @@ import Graphics.GL.Types
 import Control.Monad
 import System.Exit
 import Foreign.Ptr
+import Foreign.C.String
 import Foreign.Marshal.Array
 import Foreign.Marshal.Utils
 import Foreign.Storable
@@ -29,7 +30,7 @@ compileShader src sh = do
         putStrLn "could not create shader"
         exitFailure
 
-    withArray (map (toEnum . fromEnum) src) $ \ptr ->
+    withCString src $ \ptr ->
        with ptr $ \ptrptr -> glShaderSource shader 1 ptrptr nullPtr
 
     glCompileShader shader

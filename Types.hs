@@ -16,7 +16,7 @@ import qualified Data.IntMap as IM
 type ShaderProgram = GLuint
 type UniformLocation = GLint
 
-data Display = DisplayAsBox
+data Display = DisplayAsTris [Triangle Float]
              | DisplayAsText Font Dpi PointSize String
              deriving (Show, Typeable)
 
@@ -47,6 +47,8 @@ data Bezier a = Bezier { bezWoundClockwise :: Bool
                        , bezB :: V2 a
                        , bezC :: V2 a
                        } deriving (Show, Typeable)
+
+data Triangle a = Triangle (V2 a) (V2 a) (V2 a) deriving (Show)
 
 newtype Name = Name { unName :: String } deriving (Ord, Eq, Typeable)
 type Acceleration = V2 Float
@@ -85,8 +87,6 @@ makeLensesFor [("bodyPosition", "bodyPosition_")
               ] ''Body
 
 data Globals = Globals { gUTC          :: UTCTime
-                       , gBox          :: BoxRenderer
-                       , gBez          :: BezRenderer
                        , gWindow       :: Window
                        } deriving (Typeable)
 makeLensesFor [("gUTC", "gUTC_")

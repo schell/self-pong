@@ -18,9 +18,11 @@ import Linear
 import Prelude hiding (init)
 import Graphics.UI.GLFW
 import Graphics.Text.TrueType
+import KETTriangulation
 import Data.Time.Clock
 import Data.Maybe
 import Data.Typeable
+import Data.Monoid
 import Control.Lens
 import Control.Concurrent
 import Control.Applicative
@@ -31,7 +33,8 @@ import Control.Eff.State.Strict
 import Control.Eff.Reader.Strict
 import System.IO
 import System.Exit
-import qualified Data.Vector.Unboxed as V
+import qualified Data.Vector as V
+import qualified Data.Vector.Unboxed as UV
 import qualified Data.IntMap as IM
 import qualified Data.Map as M
 import qualified Data.Foldable as F
@@ -69,22 +72,9 @@ main = do
 
     enableBlending
     utc  <- getCurrentTime
-    boxr <- newBoxRenderer window
     fontCache <- buildCache
-    bs <- case findFontInCache fontCache arial of
-        Nothing -> do putStrLn "Could not find the font 'Arial'."
-                      exitFailure
-        Just f  -> do efont <- loadFontFile f
-                      case efont of
-                          Left err   -> putStrLn err >> exitFailure
-                          Right font -> do let cm = getCharacterGlyphsAndMetrics font '0'
-                                               bs = fontyToBeziers $ getStringCurveAtPoint 300 (0,0) [(font, 12, "0")]
-                                           print cm
-                                           return bs
 
-    bezr <- newBezRenderer window bs
-
-    let globals = Globals utc boxr bezr window
+    let globals = Globals utc window
 
     runLift $ evalState globals
             $ evalState (IM.empty :: IM.IntMap Transform)
@@ -97,13 +87,18 @@ main = do
             $ flip runFresh (ID 0)
             $ start >> loop
 
-fontyToBeziers contours = concatMap bsFromChars contours
-    where bsFromChars cs = concatMap bsFromChar cs
-          bsFromChar v = toBeziers $ map toV2 $ V.toList v
-          toV2 = uncurry V2
-          toBeziers [a,b,c] = [Bezier (triangleArea a b c < 0) a b c]
-          toBeziers (a:b:c:ps) = Bezier (triangleArea a b c < 0) a b c : toBeziers (c:ps)
-          toBeziers _ = []
+fromFonty :: UV.Unbox b => ([V2 b] -> [b1]) -> [[UV.Vector (b, b)]] -> [b1]
+fromFonty f = concatMap (concatMap bsFromChar)
+    where bsFromChar v = f $ map (uncurry V2) $ UV.toList v
+
+toBeziers :: (Ord a, Fractional a) => [V2 a] -> [Bezier a]
+toBeziers (a:b:c:ps) = Bezier (triangleArea a b c < 0) a b c : toBeziers (c:ps)
+toBeziers _ = []
+
+toTris :: [V2 Float] -> [Triangle Float]
+toTris vs = map (\(a,b,c) -> Triangle (vec V.! a) (vec V.! b) (vec V.! c)) ndxs
+    where vec  = V.fromList $ onContourPoints $ toBeziers vs
+          ndxs = triangulation vec
 
 zeroOut :: (Ord a, Fractional a) => a -> a
 zeroOut x = if abs x < 0.1 then 0 else x
@@ -118,22 +113,6 @@ start :: (Member (Fresh ID) r, SetMember Lift (Lift IO) r, Member (State Globals
          ,Member (Reader FontCache) r)
       => Eff r ()
 start = do
-    entity ## Transform (V2 150 150) (V2 10 10) 0
-           ## Body (V2 150 150) (V2 100 50) zero (V2 5 5)
-           ## DisplayAsBox
-           `named` (Name "ball")
-
-    entity ## Transform zero (V2 10 100) 0
-           ## Body (V2 (-50) 0) zero zero (V2 5 50)
-           ## DisplayAsBox
-           `named` (Name "leftPaddle")
-
-    entity ## Transform zero (V2 10 100) 0
-           ## Body (V2 50 0) zero zero (V2 5 50)
-           ## DisplayAsBox
-           `named` (Name "rightPaddle")
-
-
     mfp <- (`findFontInCache` arial) <$> ask
     case mfp of
         Nothing -> lift $ putStrLn "Could not find 'Arial' in the font cache."
@@ -141,8 +120,13 @@ start = do
             ef  <- lift $ loadFontFile fp
             case ef of
                 Left err   -> lift $ putStrLn err
-                Right font -> entity ## Transform (V2 0 20) (V2 1 1) 0
-                                     .# DisplayAsText font 150 12 "0123456789\naoeusnth"
+                Right font -> do entity ## Transform (V2 0 40) (V2 1 1) 0
+                                        .# DisplayAsText font 150 24 "0123456789"
+                                 entity ## Transform (V2 0 80) (V2 1 1) 0
+                                        .# DisplayAsText font 150 24 "abcdefghijklmnopqrstuvwxyz"
+                                 entity ## Transform (V2 0 120) (V2 1 1) 0
+                                        .# DisplayAsText font 150 24 "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+
 
 stepBodies :: TimeDelta -> IM.IntMap Body -> IM.IntMap Body
 stepBodies dt = fmap updateAll
@@ -163,8 +147,6 @@ loop :: (Member (Fresh ID) r, SetMember Lift (Lift IO) r, Member (State Globals)
         ,Member (State (IM.IntMap Display)) r, Member (State RenderCache) r)
      => Eff r ()
 loop = do
-    Box boxr <- gBox <$> get
-    Bez bezr <- gBez <$> get
     window <- gWindow <$> get
     utc    <- gUTC <$> get
 
@@ -179,17 +161,17 @@ loop = do
     modify $ gUTC_ .~ t
 
     let dt = realToFrac $ diffUTCTime t utc
-        (lx',ly',rx',ry') = case fmap (map (zeroOut . realToFrac)) axes of
-                                Just (lx':ly':rx':ry':_) -> (lx',ly',rx',ry')
-                                Nothing -> (0,0,0,0)
+    --    (lx',ly',rx',ry') = case fmap (map (zeroOut . realToFrac)) axes of
+    --                            Just (lx:ly:rx:ry:_) -> (lx,ly,rx,ry)
+    --                            _ -> (0,0,0,0)
 
     -- Update the left and right paddles
-    Just (ID lpaddle) <- getEntityBy $ Name "leftPaddle"
-    Just (ID rpaddle) <- getEntityBy $ Name "rightPaddle"
-    let vlp = 200 *^ V2 lx' (-ly')
-        vrp = 200 *^ V2 rx' (-ry')
-    modify $ IM.adjust (& bodyVelocity_ .~ vlp) lpaddle
-    modify $ IM.adjust (& bodyVelocity_ .~ vrp) rpaddle
+    --Just (ID lpaddle) <- getEntityBy $ Name "leftPaddle"
+    --Just (ID rpaddle) <- getEntityBy $ Name "rightPaddle"
+    --let vlp = 200 *^ V2 lx' (-ly')
+    --    vrp = 200 *^ V2 rx' (-ry')
+    --modify $ IM.adjust (& bodyVelocity_ .~ vlp) lpaddle
+    --modify $ IM.adjust (& bodyVelocity_ .~ vrp) rpaddle
 
 
     (bs :: IM.IntMap Body) <- get
@@ -200,21 +182,20 @@ loop = do
         ts' = tu `IM.union` ts
 
     -- Update the ball
-    Just (ID ball) <- getEntityBy $ Name "ball"
-    let Just ballBody = IM.lookup ball bs'
-        rev n = if abs n > 0 then -1.0 else 1
-        ballBody' = if null ballCollisions then ballBody
-                    else ballBody & bodyVelocity_ *~ (fmap rev $ head ballCollisions)
-                                  & bodyPosition_ -~ head ballCollisions
-        ballCollisions = catMaybes $ map (\(_, b) -> collideBodyInto b ballBody) $
-                             (filter ((/= ball) . fst) $ IM.toList bs')
+    --Just (ID ball) <- getEntityBy $ Name "ball"
+    --let Just ballBody = IM.lookup ball bs'
+    --    rev n = if abs n > 0 then -1.0 else 1
+    --    ballBody' = if null ballCollisions then ballBody
+    --                else ballBody & bodyVelocity_ *~ (fmap rev $ head ballCollisions)
+    --                              & bodyPosition_ -~ head ballCollisions
+    --    ballCollisions = catMaybes $ map (\(_, b) -> collideBodyInto b ballBody) $
+    --                         (filter ((/= ball) . fst) $ IM.toList bs')
 
-    put $ IM.insert ball ballBody' bs'
+    --put $ IM.insert ball ballBody' bs'
     put ts'
 
     lift $ do
         drawClear window
-        (render bezr) $ Transform (V2 (-150) (150)) (V2 20 20) 0
 
     ds <- get
     let draws = IM.intersectionWithKey drawThing ds ts'
@@ -226,27 +207,28 @@ loop = do
 drawThing :: (Member (State RenderCache) r, SetMember Lift (Lift  IO) r
              ,Member (State Globals) r)
           => Int -> Display -> Transform -> Eff r ()
-drawThing _ DisplayAsBox tfrm = do
-    Box r <- gBox <$> get
-    lift $ render r $ tfrm
+drawThing uid (DisplayAsTris ts) tfrm = do
+    rcache <- get
+    draw <- case IM.lookup uid rcache of
+        Just r -> return r
+        Nothing -> do window <- gWindow <$> get
+                      trir <- lift $ newTriRenderer window ts
+                      (ID uid) `hasProperty` trir
+                      return trir
+    lift $ render draw $ tfrm
+
 drawThing uid (DisplayAsText font dpi psize txt) tfrm = do
     rcache <- get
     draw <- case IM.lookup uid rcache of
         Just r  -> return r
         Nothing -> do let cs = getStringCurveAtPoint dpi (0,0) [(font, psize, txt)]
-                          bs = fontyToBeziers cs
-                          vs = onContourPoints bs
+                          bs = fromFonty toBeziers cs
+                          ts = fromFonty toTris cs
 
                       window <- gWindow <$> get
-                      Box boxr <- gBox <$> get
-                      Bez bezr <- lift $ newBezRenderer window bs
-                      let r = Renderer rendf clnup
-                          rendf t@(Transform txy sxy r) = do (render bezr) t
-                                                             flip mapM_ vs $ \v ->
-                                                                (render boxr) $ Transform (txy ^+^ v)
-                                                                                          sxy
-                                                                                          r
-                          clnup = mapM_ cleanup [boxr, bezr]
+                      bezr <- lift $ newBezRenderer window bs
+                      trir <- lift $ newTriRenderer window ts
+                      let r = bezr <> trir
                       (ID uid) `hasProperty` r
                       return r
     lift $ (render draw) tfrm

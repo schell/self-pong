@@ -18,7 +18,6 @@ import Control.Monad
 import System.Directory
 import qualified Data.Foldable as F
 
-
 triangleArea :: Fractional a => V2 a -> V2 a -> V2 a -> a
 triangleArea (V2 ax ay) (V2 bx by) (V2 cx cy) =
     0.5 * det33 (V3 (V3 ax ay 1)
@@ -60,7 +59,7 @@ newRenderSource vfp ffp uniforms = do
 newRenderer :: Window -> [V2 Float] -> [V4 Float] -> IO Renderer
 newRenderer = undefined
 
-newBezRenderer :: Window -> [Bezier Float] -> IO BezRenderer
+newBezRenderer :: Window -> [Bezier Float] -> IO Renderer
 newBezRenderer window bs = do
     (RenderSource program locs) <- newRenderSource "bezier.vert" "bezier.frag" ["projection", "modelview"]
     let Just pjloc = lookup "projection" locs
@@ -107,10 +106,10 @@ newBezRenderer window bs = do
             withArray [pbuf, tbuf] $ glDeleteBuffers 2
             withArray [vao] $ glDeleteVertexArrays 1
 
-    return $ Bez $ Renderer renderFunction cleanupFunction
+    return $ Renderer renderFunction cleanupFunction
 
-newBoxRenderer :: Window -> IO BoxRenderer
-newBoxRenderer window = do
+newTriRenderer :: Window -> [Triangle Float] -> IO Renderer
+newTriRenderer window ts = do
     (RenderSource program locs) <- newRenderSource "vert.glsl" "frag.glsl" ["projection", "modelview"]
     let Just pjloc = lookup "projection" locs
         Just mvloc = lookup "modelview" locs
@@ -124,8 +123,8 @@ newBoxRenderer window = do
         glGenBuffers 2 ptr
         peekArray 2 ptr
 
-    let ps = concatMap F.toList [V2 (-0.5) (-0.5), V2 0.5 (-0.5), V2 0.5 0.5, V2 (-0.5) 0.5] :: [GLfloat]
-        cs = concatMap F.toList $ replicate 4 $ V4 1 1 1 1 :: [GLfloat]
+    let ps = concatMap F.toList $ concatMap (\(Triangle a b c) -> [a,b,c]) ts :: [GLfloat]
+        cs = concatMap F.toList $ take (length ps) $ cycle [V4 1 1 1 0.5] :: [GLfloat]
         pssize = glFloatSize * length ps
         cssize = glFloatSize * length cs
 
@@ -143,12 +142,20 @@ newBoxRenderer window = do
 
     glBindVertexArray 0
 
-    let renderFunction = drawBox window program pjloc mvloc vao
+    let renderFunction (Transform txy sxy rot) = do
+            (pj,mv) <- getPJMV window txy sxy rot
+            glUseProgram program
+            with pj $ glUniformMatrix4fv pjloc 1 GL_TRUE . castPtr
+            with mv $ glUniformMatrix4fv mvloc 1 GL_TRUE . castPtr
+            glBindVertexArray vao
+            glDrawArrays GL_TRIANGLES 0 $ fromIntegral $ length ts * 3
+            err <- glGetError
+            when (err /= 0) $ putStrLn $ "Error: " ++ show err
         cleanupFunction = do
             withArray [pbuf, cbuf] $ glDeleteBuffers 2
             withArray [vao] $ glDeleteVertexArrays 1
 
-    return $ Box $ Renderer renderFunction cleanupFunction
+    return $ Renderer renderFunction cleanupFunction
 
 getPJMV :: Window -> V2 GLfloat -> V2 GLfloat -> GLfloat -> IO (M44 GLfloat, M44 GLfloat)
 getPJMV window (V2 x y) (V2 w h) r = do
@@ -172,15 +179,3 @@ drawClear window = do
     (fbw, fbh) <- getFramebufferSize window
     glViewport 0 0 (fromIntegral fbw) (fromIntegral fbh)
     glClear $ GL_COLOR_BUFFER_BIT .|. GL_DEPTH_BUFFER_BIT
-
-drawBox :: Window -> GLuint -> GLint -> GLint -> GLuint -> Transform -> IO ()
-drawBox window program pjloc mvloc vao (Transform txy sxy rot) = do
-        (pj,mv) <- getPJMV window txy sxy rot
-        glUseProgram program
-        with pj $ glUniformMatrix4fv pjloc 1 GL_TRUE . castPtr
-        with mv $ glUniformMatrix4fv mvloc 1 GL_TRUE . castPtr
-        glBindVertexArray vao
-        glDrawArrays GL_TRIANGLE_FAN 0 4
-        err <- glGetError
-        when (err /= 0) $ putStrLn $ "Error: " ++ show err
-
