@@ -12,20 +12,30 @@ import Control.Lens
 import Data.Typeable
 import Data.Monoid
 import qualified Data.IntMap as IM
+import qualified Data.Map as M
 
 type ShaderProgram = GLuint
 type UniformLocation = GLint
 
 data Display = DisplayAsTris [Triangle Float]
+             | DisplayAsPoly [V2 Float]
              | DisplayAsText Font Dpi PointSize String
+             | DisplayAsLine [V2 Float]
+             | DisplayAsArrows [V2 Float]
              deriving (Show, Typeable)
 
 
 type RenderCache = IM.IntMap Renderer
 
+data RenderDef = RenderDef { rdShaders :: [(String, GLuint)] -- ^ ie [("path/to/shader.vert", GL_VERTEX_SHADER), ..]
+                           , rdUniforms :: [String] -- ^ ie ["projection", "modelview", ..]
+                           } deriving (Show, Eq, Ord, Typeable)
+
 data RenderSource = RenderSource { rsProgram    :: ShaderProgram
                                  , rsAttributes :: [(String, GLint)]
-                                 }
+                                 } deriving (Show, Typeable)
+
+type RenderSources = M.Map RenderDef RenderSource
 
 type RenderFunction = Transform -> IO ()
 
@@ -42,13 +52,17 @@ instance Monoid Renderer where
 newtype BoxRenderer = Box Renderer
 newtype BezRenderer = Bez Renderer
 
-data Bezier a = Bezier { bezWoundClockwise :: Bool
+data Bezier a = Bezier { bezTriArea :: a
                        , bezA :: V2 a
                        , bezB :: V2 a
                        , bezC :: V2 a
                        } deriving (Show, Typeable)
 
+bezWoundClockwise :: (Ord a, Num a) => Bezier a -> Bool
+bezWoundClockwise = (< 0) . bezTriArea
+
 data Triangle a = Triangle (V2 a) (V2 a) (V2 a) deriving (Show)
+data Line a = Line (V2 a) (V2 a) deriving (Show)
 
 newtype Name = Name { unName :: String } deriving (Ord, Eq, Typeable)
 type Acceleration = V2 Float

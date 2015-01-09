@@ -13,12 +13,14 @@ module Main where
 import Types
 import Entity
 import Renderer
+import Font
 import Collision
 import Linear
 import Prelude hiding (init)
 import Graphics.UI.GLFW
 import Graphics.Text.TrueType
-import KETTriangulation
+import Triangulation.EarClipping as Ear
+import Triangulation.KET as Ket
 import Data.Time.Clock
 import Data.Maybe
 import Data.Typeable
@@ -83,22 +85,10 @@ main = do
             $ evalState (IM.empty :: IM.IntMap Display)
             $ evalState (IM.empty :: RenderCache)
             $ evalState (M.empty  :: M.Map Name ID)
+            $ evalState (M.empty  :: RenderSources)
             $ flip runReader fontCache
             $ flip runFresh (ID 0)
             $ start >> loop
-
-fromFonty :: UV.Unbox b => ([V2 b] -> [b1]) -> [[UV.Vector (b, b)]] -> [b1]
-fromFonty f = concatMap (concatMap bsFromChar)
-    where bsFromChar v = f $ map (uncurry V2) $ UV.toList v
-
-toBeziers :: (Ord a, Fractional a) => [V2 a] -> [Bezier a]
-toBeziers (a:b:c:ps) = Bezier (triangleArea a b c < 0) a b c : toBeziers (c:ps)
-toBeziers _ = []
-
-toTris :: [V2 Float] -> [Triangle Float]
-toTris vs = map (\(a,b,c) -> Triangle (vec V.! a) (vec V.! b) (vec V.! c)) ndxs
-    where vec  = V.fromList $ onContourPoints $ toBeziers vs
-          ndxs = triangulation vec
 
 zeroOut :: (Ord a, Fractional a) => a -> a
 zeroOut x = if abs x < 0.1 then 0 else x
@@ -110,7 +100,8 @@ start :: (Member (Fresh ID) r, SetMember Lift (Lift IO) r, Member (State Globals
          ,Member (State (IM.IntMap Name)) r, Member (State (IM.IntMap Transform)) r
          ,Member (State (IM.IntMap Body)) r, Member (State (M.Map Name ID)) r
          ,Member (State (IM.IntMap Display)) r, Member (State RenderCache) r
-         ,Member (Reader FontCache) r)
+         ,Member (Reader FontCache) r
+         ,Member (State RenderSources) r)
       => Eff r ()
 start = do
     mfp <- (`findFontInCache` arial) <$> ask
@@ -120,12 +111,20 @@ start = do
             ef  <- lift $ loadFontFile fp
             case ef of
                 Left err   -> lift $ putStrLn err
-                Right font -> do entity ## Transform (V2 0 40) (V2 1 1) 0
-                                        .# DisplayAsText font 150 24 "0123456789"
-                                 entity ## Transform (V2 0 80) (V2 1 1) 0
-                                        .# DisplayAsText font 150 24 "abcdefghijklmnopqrstuvwxyz"
+                Right font -> do let a = [V2 (-0.14648438) 0.0,V2 13.598633 (-35.791016),V2 18.701172 (-35.791016),V2 33.34961 0.0,V2 27.954102 0.0,V2 23.779297 (-10.839844),V2 8.813477 (-10.839844),V2 6.8359375 (-5.419922),V2 4.8828125 0.0]
+                                     ahole = [V2 10.180664 (-14.697266),V2 22.314453 (-14.697266),V2 18.579102 (-24.609375),V2 16.04004 (-32.03125),V2 14.111328 (-25.195313),V2 12.133789 (-19.94629)]
+                                     a' = map (*2) a
+                                     ahole' = map (*2) ahole
+                                     merge = cutMerge a' ahole'
+                                 lift $ print merge
                                  entity ## Transform (V2 0 120) (V2 1 1) 0
-                                        .# DisplayAsText font 150 24 "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+                                        .# DisplayAsArrows a'
+                                 entity ## Transform (V2 00 120) (V2 1 1) 0
+                                        .# DisplayAsArrows ahole'
+                                 entity ## Transform (V2 80 200) (V2 2 2) 0
+                                        .# (DisplayAsArrows merge)
+                                 --entity ## Transform (V2 0 120) (V2 1 1) 0
+                                 --       .# DisplayAsText font 150 24 "A"
 
 
 stepBodies :: TimeDelta -> IM.IntMap Body -> IM.IntMap Body
@@ -141,10 +140,16 @@ collideBodyInto :: Body -> Body -> Maybe (V2 Float)
 collideBodyInto a b = toAABB a `collidedInto` toAABB b
     where toAABB (Body p _ _ hs) = AABB p hs
 
-loop :: (Member (Fresh ID) r, SetMember Lift (Lift IO) r, Member (State Globals) r
-        ,Member (State (IM.IntMap Name)) r, Member (State (IM.IntMap Transform)) r
-        ,Member (State (IM.IntMap Body)) r, Member (State (M.Map Name ID)) r
-        ,Member (State (IM.IntMap Display)) r, Member (State RenderCache) r)
+loop :: ( SetMember Lift (Lift IO) r
+        , Member (Fresh ID) r
+        , Member (State Globals) r
+        , Member (State (IM.IntMap Name)) r
+        , Member (State (IM.IntMap Transform)) r
+        , Member (State (IM.IntMap Body)) r
+        , Member (State (M.Map Name ID)) r
+        , Member (State (IM.IntMap Display)) r
+        , Member (State RenderCache) r
+        , Member (State RenderSources) r)
      => Eff r ()
 loop = do
     window <- gWindow <$> get
@@ -198,40 +203,72 @@ loop = do
         drawClear window
 
     ds <- get
-    let draws = IM.intersectionWithKey drawThing ds ts'
+    let draws = IM.intersectionWithKey (flip drawThing) ds ts'
     F.sequence_ draws
 
     lift $ stepOut window
     loop
 
-drawThing :: (Member (State RenderCache) r, SetMember Lift (Lift  IO) r
-             ,Member (State Globals) r)
-          => Int -> Display -> Transform -> Eff r ()
-drawThing uid (DisplayAsTris ts) tfrm = do
+drawWithCache :: ( Member (State (IM.IntMap Renderer)) r
+                 , SetMember Lift (Lift IO) r)
+              => Eff r Renderer -> IM.Key -> Transform -> Eff r ()
+drawWithCache f uid tfrm = do
     rcache <- get
     draw <- case IM.lookup uid rcache of
         Just r -> return r
-        Nothing -> do window <- gWindow <$> get
-                      trir <- lift $ newTriRenderer window ts
-                      (ID uid) `hasProperty` trir
-                      return trir
-    lift $ render draw $ tfrm
-
-drawThing uid (DisplayAsText font dpi psize txt) tfrm = do
-    rcache <- get
-    draw <- case IM.lookup uid rcache of
-        Just r  -> return r
-        Nothing -> do let cs = getStringCurveAtPoint dpi (0,0) [(font, psize, txt)]
-                          bs = fromFonty toBeziers cs
-                          ts = fromFonty toTris cs
-
-                      window <- gWindow <$> get
-                      bezr <- lift $ newBezRenderer window bs
-                      trir <- lift $ newTriRenderer window ts
-                      let r = bezr <> trir
+        Nothing -> do r <- f
                       (ID uid) `hasProperty` r
                       return r
     lift $ (render draw) tfrm
+
+drawThing :: ( SetMember Lift (Lift  IO) r
+             , Member (State RenderCache) r
+             , Member (State RenderSources) r
+             , Member (State Globals) r)
+          => Display -> Int -> Transform -> Eff r ()
+drawThing (DisplayAsTris ts) = drawWithCache $ do
+    window <- gWindow <$> get
+    newTriRenderer window ts
+
+drawThing (DisplayAsPoly vs) = drawWithCache $ do
+    window <- gWindow <$> get
+    newTriRenderer window $ Ket.triangulate vs
+
+drawThing (DisplayAsLine vs) = drawWithCache $ do
+    window <- gWindow <$> get
+    newLineRenderer window $ toLines vs
+
+drawThing (DisplayAsArrows vs) = drawWithCache $ do
+    window <- gWindow <$> get
+    newLineRenderer window $ toArrows vs
+
+drawThing (DisplayAsText font dpi psize txt) = drawWithCache $ do
+    let cs = getStringCurveAtPoint dpi (0,0) [(font, psize, txt)]
+        bs = beziers cs
+        ps = map (map onContourPoints) bs
+        tris  = map (map toTris) ps
+    lift $ print ps
+    window <- gWindow <$> get
+    bezr <- newBezRenderer window $ concat $ concat $ bs
+    trir <- newTriRenderer window $ concat $ concat $ tris
+    let r = bezr <> trir
+    return r
+
+
+toLines :: [V2 a] -> [Line a]
+toLines (a:b:cs) = Line a b : (toLines $ b:cs)
+toLines _ = []
+
+toArrows :: Floating a => [V2 a] -> [Line a]
+toArrows = concatMap toArrow . toLines
+    where toArrow (Line a b) = [ Line a b
+                               , Line (b - u*l + n * w) b
+                               , Line (b - u*l + n * (-w)) b ]
+            where n = signorm $ perp $ b - a
+                  u = signorm $ b - a
+                  l = 5 -- head length
+                  w = 3 -- head width
+
 
 stepOut window = do
     swapBuffers window

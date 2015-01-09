@@ -1,5 +1,5 @@
 -- |
--- Module    : KETTriangulation
+-- Module    : Triangulation.KET
 -- Copyright :(C) 1997, 1998, 2008 Joern Dinkla, www.dinkla.net
 --
 -- Updates by Schell Scivally
@@ -11,8 +11,9 @@
 --     Joern Dinkla, Geometrische Algorithmen in Haskell, Diploma Thesis,
 --     University of Bonn, Germany, 1998.
 
-module KETTriangulation (triangulation) where
+module Triangulation.KET (triangulate) where
 
+import Types
 import Linear
 import Data.Vector (Vector)
 import qualified Data.Vector as V
@@ -21,6 +22,11 @@ import Data.List ( (\\) )
 type V2i = (V2 Float,Int)
 
 toV2 = V.map (\(x,i) -> x)
+
+triangulate :: [V2 Float] -> [Triangle Float]
+triangulate vs = map (\(a,b,c) -> Triangle (vec V.! a) (vec V.! b) (vec V.! c)) ndxs
+    where vec  = V.fromList vs
+          ndxs = triangulation vec
 
 triangulation :: Vector (V2 Float) -> [(Int,Int,Int)]
 triangulation points | (V.length vertices) > 3 = scan vs stack rs
