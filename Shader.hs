@@ -18,10 +18,7 @@ colorLoc :: GLuint
 colorLoc = 1
 
 uvLoc :: GLuint
-uvLoc = 1
-
-cwLoc :: GLuint
-cwLoc = 2
+uvLoc = 2
 
 compileShader :: String -> GLuint -> IO GLuint
 compileShader src sh = do

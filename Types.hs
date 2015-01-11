@@ -19,7 +19,8 @@ type UniformLocation = GLint
 
 data Display = DisplayAsTris [Triangle Float]
              | DisplayAsPoly [V2 Float]
-             | DisplayAsText Font Dpi PointSize String
+             | DisplayAsText FontDescriptor Dpi PointSize String
+             | DisplayAsText' FontDescriptor Dpi PointSize String -- ^ With testing visuals
              | DisplayAsLine [V2 Float]
              | DisplayAsArrows [V2 Float]
              deriving (Show, Typeable)
@@ -63,6 +64,7 @@ bezWoundClockwise = (< 0) . bezTriArea
 
 data Triangle a = Triangle (V2 a) (V2 a) (V2 a) deriving (Show)
 data Line a = Line (V2 a) (V2 a) deriving (Show)
+newtype Color = Color { unColor :: V4 Float } deriving (Typeable)
 
 newtype Name = Name { unName :: String } deriving (Ord, Eq, Typeable)
 type Acceleration = V2 Float

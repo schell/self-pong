@@ -1,5 +1,6 @@
 #version 330 core
 in vec3 fbez;
+in vec4 fcolor;
 out vec4 fragColor;
 
 void main() {
@@ -29,5 +30,5 @@ void main() {
         // We are right on the boundary, interpolate the color intensity.
         a = alpha;
     }
-    fragColor = vec4(1.0, 0.0, 0.0, a);
+    fragColor = fcolor * vec4(1.0, 1.0, 1.0, a);
 }

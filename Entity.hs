@@ -4,6 +4,7 @@
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# OPTIONS_GHC -fno-warn-missing-signatures #-}
 
 module Entity where
 
@@ -47,3 +48,13 @@ getEntityBy name = do
     m <- get
     return $ M.lookup name m
 
+--------------------------------------------------------------------------------
+-- Intersections
+--------------------------------------------------------------------------------
+intersectionWith3 f a b c = IM.intersectionWith ($) (IM.intersectionWith f a b) c
+intersectionWith4 f a b c d = IM.intersectionWith ($) (intersectionWith3 f a b c) d
+intersectionWith5 f a b c d e = IM.intersectionWith ($) (intersectionWith4 f a b c d) e
+
+intersectionWithKey3 f a b c = IM.intersectionWith ($) (IM.intersectionWithKey f a b) c
+intersectionWithKey4 f a b c d = IM.intersectionWith ($) (intersectionWithKey3 f a b c) d
+intersectionWithKey5 f a b c d e = IM.intersectionWith ($) (intersectionWithKey4 f a b c d) e

@@ -10,7 +10,7 @@ triangulate ps = triangulate' [] $ clean ps
               | (p1:p2:p3:[]) <- ps' = Triangle p1 p2 p3 :ts
               | (p1:p2:p3:rest) <- ps' =
                   let isReflex = area p1 p2 p3 >= 0
-                  in if {-isReflex && -}(not $ any (`pointInside` [p1,p2,p3]) rest)
+                  in if isReflex && (not $ any (`pointInside` [p1,p2,p3]) rest)
                      then triangulate' (ts ++ [Triangle p1 p2 p3]) $ p1:p3:rest
                      -- Cycle through and check the next triangle
                      else triangulate' ts $ p2:p3:rest ++ [p1]

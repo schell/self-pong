@@ -10,7 +10,7 @@
 -- see
 --     Joern Dinkla, Geometrische Algorithmen in Haskell, Diploma Thesis,
 --     University of Bonn, Germany, 1998.
-
+{-# OPTIONS_GHC -fno-warn-missing-signatures #-}
 module Triangulation.KET (triangulate) where
 
 import Types
@@ -21,7 +21,7 @@ import Data.List ( (\\) )
 
 type V2i = (V2 Float,Int)
 
-toV2 = V.map (\(x,i) -> x)
+toV2 = V.map (\(x,_) -> x)
 
 triangulate :: [V2 Float] -> [Triangle Float]
 triangulate vs = map (\(a,b,c) -> Triangle (vec V.! a) (vec V.! b) (vec V.! c)) ndxs

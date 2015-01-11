@@ -28,6 +28,7 @@ import Data.Monoid
 import Control.Lens
 import Control.Concurrent
 import Control.Applicative
+import Control.Monad
 import Control.Eff
 import Control.Eff.Fresh
 import Control.Eff.Lift
@@ -41,8 +42,10 @@ import qualified Data.IntMap as IM
 import qualified Data.Map as M
 import qualified Data.Foldable as F
 
+type FontCacheVar = MVar FontCache
 deriving instance Typeable FontCache
 deriving instance Show RawGlyph
+
 
 emptyTransform :: Transform
 emptyTransform = Transform zero (V2 1 1) 0
@@ -52,6 +55,9 @@ renderTransform (Box rnd) t = render rnd $ t
 
 arial :: FontDescriptor
 arial = FontDescriptor "Arial" $ FontStyle False False
+
+ubuntuMono :: FontDescriptor
+ubuntuMono = FontDescriptor "Ubuntu Mono" $ FontStyle False False
 
 main :: IO ()
 main = do
@@ -74,8 +80,9 @@ main = do
 
     enableBlending
     utc  <- getCurrentTime
-    fontCache <- buildCache
 
+    fontCacheVar <- newMVar emptyFontCache
+    _ <- forkFinally (loadFontsInto fontCacheVar) print
     let globals = Globals utc window
 
     runLift $ evalState globals
@@ -83,12 +90,23 @@ main = do
             $ evalState (IM.empty :: IM.IntMap Body)
             $ evalState (IM.empty :: IM.IntMap Name)
             $ evalState (IM.empty :: IM.IntMap Display)
+            $ evalState (IM.empty :: IM.IntMap Color)
             $ evalState (IM.empty :: RenderCache)
             $ evalState (M.empty  :: M.Map Name ID)
             $ evalState (M.empty  :: RenderSources)
-            $ flip runReader fontCache
+            $ flip runReader fontCacheVar
             $ flip runFresh (ID 0)
             $ start >> loop
+
+loadFontsInto :: FontCacheVar -> IO ()
+loadFontsInto fontCacheVar = do
+    putStrLn "Loading fonts..."
+    fontCache <- buildCache
+    putStrLn $ show $ enumerateFonts fontCache
+    _ <- takeMVar fontCacheVar
+    putMVar fontCacheVar fontCache
+    putStrLn "Loaded fonts!"
+
 
 zeroOut :: (Ord a, Fractional a) => a -> a
 zeroOut x = if abs x < 0.1 then 0 else x
@@ -96,35 +114,39 @@ zeroOut x = if abs x < 0.1 then 0 else x
 wrp :: Ord a => (a,a) -> a -> a
 wrp (w,z) n = if n > z then w else if n < w then z else n
 
-start :: (Member (Fresh ID) r, SetMember Lift (Lift IO) r, Member (State Globals) r
-         ,Member (State (IM.IntMap Name)) r, Member (State (IM.IntMap Transform)) r
-         ,Member (State (IM.IntMap Body)) r, Member (State (M.Map Name ID)) r
-         ,Member (State (IM.IntMap Display)) r, Member (State RenderCache) r
-         ,Member (Reader FontCache) r
-         ,Member (State RenderSources) r)
+start :: ( Member (Fresh ID) r
+         , SetMember Lift (Lift IO) r
+         , Member (State (IM.IntMap Name)) r
+         , Member (State (IM.IntMap Transform)) r
+         , Member (State (IM.IntMap Body)) r
+         , Member (State (IM.IntMap Display)) r
+         , Member (State (IM.IntMap Color)) r
+         , Member (State (M.Map Name ID)) r
+         , Member (State Globals) r
+         , Member (State RenderCache) r
+         , Member (Reader FontCacheVar) r
+         , Member (State RenderSources) r)
       => Eff r ()
 start = do
-    mfp <- (`findFontInCache` arial) <$> ask
-    case mfp of
-        Nothing -> lift $ putStrLn "Could not find 'Arial' in the font cache."
+    entity ## Transform (V2 0 280) (V2 1 1) 0
+           ## Color (V4 1 1 1 1)
+           .# DisplayAsText ubuntuMono 300 12 "Hello there!"
+
+withFont desc f = do
+    fvar <- ask
+    cache <- lift $ takeMVar fvar
+    case findFontInCache cache desc of
+        Nothing -> do lift $ --do putStrLn $ "Could not find " ++ (show $ _descriptorFamilyName desc)
+                             --                                ++ " in the font cache."
+                             --   print $ enumerateFonts cache
+                                return ()
+
         Just fp -> do
             ef  <- lift $ loadFontFile fp
             case ef of
                 Left err   -> lift $ putStrLn err
-                Right font -> do let a = [V2 (-0.14648438) 0.0,V2 13.598633 (-35.791016),V2 18.701172 (-35.791016),V2 33.34961 0.0,V2 27.954102 0.0,V2 23.779297 (-10.839844),V2 8.813477 (-10.839844),V2 6.8359375 (-5.419922),V2 4.8828125 0.0]
-                                     ahole = [V2 10.180664 (-14.697266),V2 22.314453 (-14.697266),V2 18.579102 (-24.609375),V2 16.04004 (-32.03125),V2 14.111328 (-25.195313),V2 12.133789 (-19.94629)]
-                                     a' = map (*2) a
-                                     ahole' = map (*2) ahole
-                                     merge = cutMerge a' ahole'
-                                 lift $ print merge
-                                 entity ## Transform (V2 0 120) (V2 1 1) 0
-                                        .# DisplayAsArrows a'
-                                 entity ## Transform (V2 00 120) (V2 1 1) 0
-                                        .# DisplayAsArrows ahole'
-                                 entity ## Transform (V2 80 200) (V2 2 2) 0
-                                        .# (DisplayAsArrows merge)
-                                 --entity ## Transform (V2 0 120) (V2 1 1) 0
-                                 --       .# DisplayAsText font 150 24 "A"
+                Right font -> f font
+    lift $ putMVar fvar cache
 
 
 stepBodies :: TimeDelta -> IM.IntMap Body -> IM.IntMap Body
@@ -148,6 +170,8 @@ loop :: ( SetMember Lift (Lift IO) r
         , Member (State (IM.IntMap Body)) r
         , Member (State (M.Map Name ID)) r
         , Member (State (IM.IntMap Display)) r
+        , Member (State (IM.IntMap Color)) r
+        , Member (Reader FontCacheVar) r
         , Member (State RenderCache) r
         , Member (State RenderSources) r)
      => Eff r ()
@@ -203,7 +227,8 @@ loop = do
         drawClear window
 
     ds <- get
-    let draws = IM.intersectionWithKey (flip drawThing) ds ts'
+    cs <- fmap unColor <$> get
+    let draws = intersectionWithKey3 drawThing cs ds ts'
     F.sequence_ draws
 
     lift $ stepOut window
@@ -211,8 +236,8 @@ loop = do
 
 drawWithCache :: ( Member (State (IM.IntMap Renderer)) r
                  , SetMember Lift (Lift IO) r)
-              => Eff r Renderer -> IM.Key -> Transform -> Eff r ()
-drawWithCache f uid tfrm = do
+              => Int -> Eff r Renderer -> Transform -> Eff r ()
+drawWithCache uid f tfrm = do
     rcache <- get
     draw <- case IM.lookup uid rcache of
         Just r -> return r
@@ -221,39 +246,46 @@ drawWithCache f uid tfrm = do
                       return r
     lift $ (render draw) tfrm
 
+textDraw color font dpi psize txt = do
+    let cs = getStringCurveAtPoint dpi (0,0) [(font, psize, txt)]
+        bs = beziers cs
+        bs' = concat $ concat bs
+        ts = concatMap (concatMap (concaveTriangles . onContourPoints)) bs
+    window <- gWindow <$> get
+    newPolyRenderer window color bs' ts
+
 drawThing :: ( SetMember Lift (Lift  IO) r
              , Member (State RenderCache) r
              , Member (State RenderSources) r
-             , Member (State Globals) r)
-          => Display -> Int -> Transform -> Eff r ()
-drawThing (DisplayAsTris ts) = drawWithCache $ do
+             , Member (State Globals) r
+             , Member (Reader FontCacheVar) r)
+          => Int -> V4 Float -> Display -> Transform -> Eff r ()
+drawThing uid color (DisplayAsTris ts) = drawWithCache uid $ do
     window <- gWindow <$> get
-    newTriRenderer window ts
-
-drawThing (DisplayAsPoly vs) = drawWithCache $ do
+    newTriRenderer window color ts
+drawThing uid color (DisplayAsPoly vs) = drawWithCache uid $ do
     window <- gWindow <$> get
-    newTriRenderer window $ Ket.triangulate vs
-
-drawThing (DisplayAsLine vs) = drawWithCache $ do
+    newTriRenderer window color $ Ket.triangulate vs
+drawThing uid color (DisplayAsLine vs) = drawWithCache uid $ do
     window <- gWindow <$> get
-    newLineRenderer window $ toLines vs
-
-drawThing (DisplayAsArrows vs) = drawWithCache $ do
+    newLineRenderer window color $ toLines vs
+drawThing uid color (DisplayAsArrows vs) = drawWithCache uid $ do
     window <- gWindow <$> get
-    newLineRenderer window $ toArrows vs
-
-drawThing (DisplayAsText font dpi psize txt) = drawWithCache $ do
-    let cs = getStringCurveAtPoint dpi (0,0) [(font, psize, txt)]
-        bs = beziers cs
-        ps = map (map onContourPoints) bs
-        tris  = map (map toTris) ps
-    lift $ print ps
-    window <- gWindow <$> get
-    bezr <- newBezRenderer window $ concat $ concat $ bs
-    trir <- newTriRenderer window $ concat $ concat $ tris
-    let r = bezr <> trir
-    return r
-
+    newLineRenderer window color $ toArrows vs
+drawThing uid color (DisplayAsText desc dpi psize txt) = \t ->
+    withFont desc $ \font ->
+        drawWithCache uid (textDraw color font dpi psize txt) t
+drawThing uid color (DisplayAsText' desc dpi psize txt) = \t ->
+    withFont desc $ \font ->
+        flip (drawWithCache uid) t $ do
+            txtr <- textDraw color font dpi psize txt
+            let cs = getStringCurveAtPoint dpi (0,0) [(font, psize, txt)]
+                bs = beziers cs
+                as = concatMap (concatMap toArrows) $ map (map onContourPoints) bs
+            window <- gWindow <$> get
+            linr <- newLineRenderer window color as
+            let r = txtr <> linr
+            return r
 
 toLines :: [V2 a] -> [Line a]
 toLines (a:b:cs) = Line a b : (toLines $ b:cs)

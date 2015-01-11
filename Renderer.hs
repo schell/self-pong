@@ -15,6 +15,7 @@ import Foreign.Storable
 import Foreign.Ptr
 import Data.Bits
 import Data.Maybe
+import Data.Monoid
 import Control.Applicative
 import Control.Monad
 import Control.Eff
@@ -56,14 +57,44 @@ newRenderSource rd@(RenderDef fps uniforms) = do
             modify $ M.insert rd r
             return r
 
+newPolyRenderer :: ( Member (State RenderSources) r
+                   , SetMember Lift (Lift IO) r)
+                => Window -> V4 Float -> [Bezier Float] -> [Triangle Float] -> Eff r Renderer
+newPolyRenderer window color bs ts = do
+    bezr <- newBezRenderer window color bs
+    trir <- newTriRenderer window color ts
+    let btr = bezr <> trir
+        r t = do glClear GL_DEPTH_BUFFER_BIT
+                 glEnable GL_STENCIL_TEST
+                 glColorMask GL_FALSE GL_FALSE GL_FALSE GL_FALSE
+                 glDepthMask GL_FALSE
+
+                 glStencilMask 0xFF
+                 glClear GL_STENCIL_BUFFER_BIT
+
+                 glStencilFunc GL_NEVER 0 1
+                 glStencilOp GL_INVERT GL_INVERT GL_INVERT
+
+                 (render btr) t
+
+                 glColorMask GL_TRUE GL_TRUE GL_TRUE GL_TRUE
+                 glDepthMask GL_TRUE
+                 glStencilFunc GL_EQUAL 1 1
+                 glStencilOp GL_ZERO GL_ZERO GL_ZERO
+
+                 (render btr) t
+
+        c = cleanup btr
+    return $ Renderer r c
+
 newBezRenderer :: ( Member (State RenderSources) r
                   , SetMember Lift (Lift IO) r)
-               => Window -> [Bezier Float] -> Eff r Renderer
-newBezRenderer window bs = do
+               => Window -> V4 Float -> [Bezier Float] -> Eff r Renderer
+newBezRenderer window color bs = do
     -- Create a new rendersource (compiled shader program) or retreive an
     -- existing one out of our RenderSources
-    let def = RenderDef [("bezier.vert", GL_VERTEX_SHADER)
-                        ,("bezier.frag", GL_FRAGMENT_SHADER)]
+    let def = RenderDef [("shaders/bezier.vert", GL_VERTEX_SHADER)
+                        ,("shaders/bezier.frag", GL_FRAGMENT_SHADER)]
                         ["projection", "modelview"]
     (RenderSource program locs) <- newRenderSource def
 
@@ -75,14 +106,16 @@ newBezRenderer window bs = do
             glGenVertexArrays 1 ptr
             peekArray 1 ptr
         glBindVertexArray vao
-        [pbuf, tbuf] <- allocaArray 2 $ \ptr -> do
-            glGenBuffers 2 ptr
-            peekArray 2 ptr
+        [pbuf, tbuf, cbuf] <- allocaArray 3 $ \ptr -> do
+            glGenBuffers 3 ptr
+            peekArray 3 ptr
 
         let ps = concatMap F.toList $ concatMap (\(Bezier _ a b c) -> [a,b,c]) bs :: [GLfloat]
+            cs = concatMap F.toList $ take (length ps) $ cycle [color] :: [GLfloat]
             ts = concatMap (\w -> [0, 0, w, 0.5, 0, w, 1, 1, w]) $
                      map (fromBool . bezWoundClockwise) bs :: [GLfloat]
             psize = glFloatSize * length ps
+            csize = glFloatSize * length cs
             tsize = glFloatSize * length ts
 
         glBindBuffer GL_ARRAY_BUFFER pbuf
@@ -90,6 +123,12 @@ newBezRenderer window bs = do
             glBufferData GL_ARRAY_BUFFER (fromIntegral psize) (castPtr ptr) GL_STATIC_DRAW
         glEnableVertexAttribArray positionLoc
         glVertexAttribPointer positionLoc 2 GL_FLOAT GL_FALSE 0 nullPtr
+
+        glBindBuffer GL_ARRAY_BUFFER cbuf
+        withArray cs $ \ptr ->
+            glBufferData GL_ARRAY_BUFFER (fromIntegral csize) (castPtr ptr) GL_STATIC_DRAW
+        glEnableVertexAttribArray colorLoc
+        glVertexAttribPointer colorLoc 4 GL_FLOAT GL_FALSE 0 nullPtr
 
         glBindBuffer GL_ARRAY_BUFFER tbuf
         withArray ts $ \ptr ->
@@ -109,17 +148,17 @@ newBezRenderer window bs = do
                 err <- glGetError
                 when (err /= 0) $ putStrLn $ "Error: " ++ show err
             cleanupFunction = do
-                withArray [pbuf, tbuf] $ glDeleteBuffers 2
+                withArray [pbuf, tbuf, cbuf] $ glDeleteBuffers 2
                 withArray [vao] $ glDeleteVertexArrays 1
 
         return $ Renderer renderFunction cleanupFunction
 
 newTriRenderer :: ( Member (State RenderSources) r
                   , SetMember Lift (Lift IO) r)
-               => Window -> [Triangle Float] -> Eff r Renderer
-newTriRenderer window ts = do
-    let def = RenderDef [("vert.glsl", GL_VERTEX_SHADER)
-                        ,("frag.glsl", GL_FRAGMENT_SHADER)]
+               => Window -> V4 Float -> [Triangle Float] -> Eff r Renderer
+newTriRenderer window color ts = do
+    let def = RenderDef [("shaders/vert.glsl", GL_VERTEX_SHADER)
+                        ,("shaders/frag.glsl", GL_FRAGMENT_SHADER)]
                         ["projection", "modelview"]
     (RenderSource program locs) <- newRenderSource def
     let Just pjloc = lookup "projection" locs
@@ -136,7 +175,7 @@ newTriRenderer window ts = do
             peekArray 2 ptr
 
         let ps = concatMap F.toList $ concatMap (\(Triangle a b c) -> [a,b,c]) ts :: [GLfloat]
-            cs = concatMap F.toList $ take (length ps) $ cycle [V4 1 1 1 0.5] :: [GLfloat]
+            cs = concatMap F.toList $ take (length ps) $ cycle [color] :: [GLfloat]
             pssize = glFloatSize * length ps
             cssize = glFloatSize * length cs
 
@@ -171,10 +210,10 @@ newTriRenderer window ts = do
 
 newLineRenderer :: ( Member (State RenderSources) r
                   , SetMember Lift (Lift IO) r)
-               => Window -> [Line Float] -> Eff r Renderer
-newLineRenderer window ls = do
-    let def = RenderDef [("vert.glsl", GL_VERTEX_SHADER)
-                        ,("frag.glsl", GL_FRAGMENT_SHADER)]
+               => Window -> V4 Float -> [Line Float] -> Eff r Renderer
+newLineRenderer window color ls = do
+    let def = RenderDef [("shaders/vert.glsl", GL_VERTEX_SHADER)
+                        ,("shaders/frag.glsl", GL_FRAGMENT_SHADER)]
                         ["projection", "modelview"]
     (RenderSource program locs) <- newRenderSource def
     let Just pjloc = lookup "projection" locs
@@ -191,7 +230,7 @@ newLineRenderer window ls = do
             peekArray 2 ptr
 
         let ps = concatMap F.toList $ concatMap (\(Line a b) -> [a,b]) ls :: [GLfloat]
-            cs = concatMap F.toList $ take (length ps) $ cycle [V4 1 1 1 1] :: [GLfloat]
+            cs = concatMap F.toList $ take (length ps) $ cycle [color] :: [GLfloat]
             pssize = glFloatSize * length ps
             cssize = glFloatSize * length cs
 

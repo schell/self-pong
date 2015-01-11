@@ -5,6 +5,9 @@ import Control.Lens
 
 type Poly = [V2 Float]
 
+signedArea :: Num a => [V2 a] -> a
+signedArea = signedAreaOfPoints
+
 signedAreaOfPoints :: Num a => [V2 a] -> a
 signedAreaOfPoints lst =
   sum [x1 * y2 - x2 * y1 | (V2 x1 y1, V2 x2 y2) <- zip lst $ rotateLeft lst]
@@ -17,7 +20,7 @@ rotateLeft (x:xs) = xs ++ [x]
 insidePoly :: Poly -> Poly -> Bool
 insidePoly poly1 poly2 | null poly1 = False
                        | null poly2 = False
-                       | otherwise    = pointInside (head poly1) poly2
+                       | otherwise  = and $ map (`pointInside` poly2) poly1
 
 -- | A point is inside a polygon if it has an odd number of intersections with the boundary (Jordan Curve theorem)
 pointInside :: (V2 Float) -> Poly -> Bool
