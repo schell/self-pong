@@ -1,14 +1,50 @@
-module Font
-    where
+{-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE StandaloneDeriving #-}
+{-# LANGUAGE DeriveDataTypeable #-}
+{-# OPTIONS_GHC -fno-warn-orphans #-}
+module Font where
 
 import Types
 import Linear hiding (trace)
 import Prelude hiding (init)
+import Graphics.Text.TrueType
 import Triangulation.KET as Ket
 import Triangulation.Common
+import Control.Concurrent.Async
+import Control.Eff
+import Control.Eff.Lift
+import Control.Eff.Reader.Strict
 import Data.List
+import Data.Typeable
 import qualified Data.Vector.Unboxed as UV
 
+deriving instance Typeable Async
+deriving instance Typeable FontCache
+
+withFont :: (Member (Reader (Async FontCache)) r, SetMember Lift (Lift IO) r)
+         => FontDescriptor -> (Font -> Eff r ()) -> Eff r ()
+withFont desc f = do
+    mCache <- ask >>= lift . poll
+    let mPath = do eCache <- mCache
+                   case eCache of
+                       Left e -> fail $ show e
+                       Right cache -> findFontInCache cache desc
+    flip (maybe (return ())) mPath $ \fp -> do
+        ef  <- lift $ loadFontFile fp
+        case ef of
+            Left err   -> lift $ putStrLn err
+            Right font -> f font
+
+arial :: FontDescriptor
+arial = FontDescriptor "Arial" $ FontStyle False False
+
+ubuntuMono :: FontDescriptor
+ubuntuMono = FontDescriptor "Ubuntu Mono" $ FontStyle False False
+
+--------------------------------------------------------------------------------
+-- Decomposition into triangles and beziers
+--------------------------------------------------------------------------------
 -- | Ephemeral types for creating polygons from font outlines.
 -- Fonty gives us a [[Vector (Float, Float)]] for an entire string, which breaks down to
 type Contours = [Bezier Float]

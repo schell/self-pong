@@ -1,4 +1,5 @@
 {-# LANGUAGE DeriveDataTypeable #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE TemplateHaskell #-}
 module Types where
 
@@ -8,9 +9,9 @@ import Graphics.UI.GLFW
 import Graphics.GL.Types
 import Graphics.Text.TrueType
 import Data.Time.Clock
+import Data.Monoid
 import Control.Lens
 import Data.Typeable
-import Data.Monoid
 import qualified Data.IntMap as IM
 import qualified Data.Map as M
 
@@ -66,7 +67,9 @@ data Triangle a = Triangle (V2 a) (V2 a) (V2 a) deriving (Show)
 data Line a = Line (V2 a) (V2 a) deriving (Show)
 newtype Color = Color { unColor :: V4 Float } deriving (Typeable)
 
+newtype ID = ID { unID :: Int } deriving (Enum, Ord, Eq, Typeable)
 newtype Name = Name { unName :: String } deriving (Ord, Eq, Typeable)
+newtype ParentEntity = Parent { unParent :: Int } deriving (Show, Typeable)
 type Acceleration = V2 Float
 type Velocity = V2 Float
 type Translation = V2 Float
@@ -83,6 +86,10 @@ makeLensesFor [("tfrmTranslation", "tfrmTranslation_")
               ,("tfrmScale", "tfrmScale_")
               ,("tfrmRotation", "tfrmRotation_")
               ] ''Transform
+
+instance Monoid Transform where
+    mempty = Transform zero (V2 1 1) 0
+    (Transform t1 s1 r1) `mappend` (Transform t2 s2 r2) = Transform (t1 + t2) (s1 * s2) (r1 + r2)
 
 data AABB = AABB { aabbCenter     :: Position
                  , aabbHalfVector :: Size

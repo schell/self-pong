@@ -1,13 +1,10 @@
 {-# LANGUAGE TypeOperators #-}
 {-# LANGUAGE FlexibleContexts #-}
-{-# LANGUAGE DeriveDataTypeable #-}
-{-# LANGUAGE RecordWildCards #-}
-{-# LANGUAGE TemplateHaskell #-}
-{-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# OPTIONS_GHC -fno-warn-missing-signatures #-}
 
 module Entity where
 
+import Types
 import Prelude hiding (init)
 import Control.Eff
 import Control.Eff.Fresh
@@ -15,8 +12,6 @@ import Control.Eff.State.Strict
 import Data.Typeable
 import qualified Data.IntMap as IM
 import qualified Data.Map as M
-
-newtype ID = ID { unID :: Int } deriving (Enum, Ord, Eq, Typeable)
 
 hasProperty :: (Member (State (IM.IntMap a)) r, Typeable a) => ID -> a -> Eff r ()
 hasProperty eid val = modify $ IM.insert (unID eid) val
